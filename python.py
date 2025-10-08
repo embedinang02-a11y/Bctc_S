@@ -351,13 +351,23 @@ with tab2:
                             api_key
                         )
                     st.markdown(response)
+                    
                     # 4. Thêm phản hồi của AI vào lịch sử
-                    st.session_state.chat_history.append({"role": "assistant", "content": response})
+                    # CHỈ THÊM VÀO LỊCH SỬ NẾU PHẢN HỒI KHÔNG PHẢI LÀ THÔNG BÁO LỖI HỆ THỐNG/API
+                    is_error_response = response.startswith("Lỗi:") or response.startswith("Lỗi gọi Gemini API:")
+                    
+                    if not is_error_response:
+                        st.session_state.chat_history.append({"role": "assistant", "content": response})
+                    else:
+                        # Nếu phản hồi là lỗi (do API Key hoặc lỗi kết nối), xóa tin nhắn người dùng vừa thêm.
+                        # Điều này ngăn tin nhắn lỗi hiển thị vĩnh viễn trong lịch sử chat.
+                        st.session_state.chat_history.pop()
+                        
                 except Exception as e:
                      error_message = f"Đã xảy ra lỗi trong quá trình gọi API/xử lý: {e}. Vui lòng thử lại."
                      st.error(error_message)
-                     # Lưu ý: Khi lỗi xảy ra, tin nhắn người dùng vẫn nằm trong lịch sử, 
-                     # nhưng tin nhắn trả lời lỗi này sẽ không được thêm vào lịch sử để tránh làm phức tạp API.
+                     # Xóa tin nhắn người dùng vừa thêm vào history vì không có phản hồi
+                     st.session_state.chat_history.pop() 
                      
     if st.session_state.df_markdown != "":
         st.caption("Dữ liệu báo cáo đã xử lý đang được cung cấp cho AI để trả lời các câu hỏi chuyên sâu của bạn.")
