@@ -9,7 +9,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("Ứng dụng Phân Tích Báo Cáo Tài Chính 📊")
+st.title("Ứng dụng Phân Tích Báo Cáo Tài Chính (Có Biểu đồ & Tỷ số Nhanh)")
 
 # Khởi tạo Session State cho lịch sử chat và ngữ cảnh dữ liệu
 if "chat_history" not in st.session_state:
@@ -32,7 +32,11 @@ def process_financial_data(df):
     # Đảm bảo các giá trị là số để tính toán
     numeric_cols = ['Năm trước', 'Năm sau']
     for col in numeric_cols:
-        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        # Xử lý các lỗi khi chuyển đổi thành số (như chuỗi trống hoặc dấu phẩy)
+        df[col] = pd.to_numeric(
+            df[col].astype(str).str.replace(',', ''), 
+            errors='coerce'
+        ).fillna(0)
             
     # 1. Tính Tốc độ Tăng trưởng
     # Dùng .replace(0, 1e-9) cho Series Pandas để tránh lỗi chia cho 0
@@ -50,18 +54,15 @@ def process_financial_data(df):
     tong_tai_san_N_1 = tong_tai_san_row['Năm trước'].iloc[0]
     tong_tai_san_N = tong_tai_san_row['Năm sau'].iloc[0]
 
-    # ******************************* PHẦN XỬ LÝ CHIA CHO 0 *******************************
-    # Sử dụng điều kiện ternary để xử lý giá trị 0 thủ công cho mẫu số.
-    
-    divisor_N_1 = tong_tai_san_N_1 if tong_tai_san_N_1 != 0 else 1e-9
-    divisor_N = tong_tai_san_N if tong_tai_san_N != 0 else 1e-9
+    # Xử lý chia cho 0 cho Tỷ trọng (Nếu Tổng Tài sản bằng 0, không thể tính tỷ trọng)
+    divisor_N_1 = tong_tai_san_N_1 if tong_tai_san_N_1 != 0 else float('nan')
+    divisor_N = tong_tai_san_N if tong_tai_san_N != 0 else float('nan')
 
     # Tính tỷ trọng với mẫu số đã được xử lý
     df['Tỷ trọng Năm trước (%)'] = (df['Năm trước'] / divisor_N_1) * 100
     df['Tỷ trọng Năm sau (%)'] = (df['Năm sau'] / divisor_N) * 100
-    # ******************************* KẾT THÚC XỬ LÝ *******************************
     
-    return df
+    return df.fillna(0) # Thay thế NaN bằng 0 sau khi tính toán (trừ NaN từ division by zero)
 
 # --- Hàm gọi API Gemini cho phân tích tự động ---
 def get_ai_analysis(data_for_ai, api_key):
@@ -71,8 +72,8 @@ def get_ai_analysis(data_for_ai, api_key):
         model_name = 'gemini-2.5-flash' 
 
         prompt = f"""
-Bạn là một chuyên gia phân tích tài chính chuyên nghiệp. Dựa trên các chỉ số tài chính sau, hãy đưa ra một nhận xét khách quan, ngắn gọn (khoảng 3-4 đoạn) về tình hình tài chính của doanh nghiệp. Đánh giá tập trung vào tốc độ tăng trưởng, thay đổi cơ cấu tài sản và khả năng thanh toán hiện hành.
-                                
+Bạn là một chuyên gia phân tích tài chính chuyên nghiệp. Dựa trên các chỉ số tài chính sau, hãy đưa ra một nhận xét khách quan, ngắn gọn (khoảng 3-4 đoạn) về tình hình tài chính của doanh nghiệp. Đánh giá tập trung vào tốc độ tăng trưởng, thay đổi cơ cấu tài sản và khả năng thanh toán hiện hành (Current Ratio) và thanh toán nhanh (Quick Ratio).
+                                    
 Dữ liệu thô và chỉ số:
 {data_for_ai}
 """
@@ -106,23 +107,24 @@ def get_chat_response(prompt, processed_data_markdown, chat_history, api_key):
         # 2. Chuẩn bị nội dung gửi đi (Lịch sử Chat + Prompt hiện tại với Context)
         full_contents = []
         
-        # Thêm các tin nhắn cũ vào lịch sử (Đảm bảo đúng định dạng role cho API)
+        # Chuyển đổi lịch sử chat của Streamlit sang định dạng API
         for message in chat_history:
             if "content" in message and message["role"] in ["user", "assistant"]:
-                # 'assistant' trong st.session_state tương ứng với 'model' trong Gemini API
                 role = "user" if message["role"] == "user" else "model"
                 full_contents.append({"role": role, "parts": [{"text": message["content"]}]})
 
-        # Thêm prompt hiện tại của người dùng, gắn kèm ngữ cảnh dữ liệu
+        # 3. Gắn ngữ cảnh dữ liệu vào tin nhắn cuối cùng của người dùng (tin nhắn hiện tại)
         user_prompt_with_context = f"Đây là Bảng Dữ liệu Tài chính đã được phân tích:\n{processed_data_markdown}\n\nCâu hỏi của tôi: {prompt}"
         
-        # Cập nhật prompt cuối cùng của người dùng với ngữ cảnh dữ liệu
+        # Tin nhắn cuối cùng trong full_contents là tin nhắn người dùng hiện tại (với nội dung thô là 'prompt')
         if full_contents and full_contents[-1]["role"] == "user":
+             # Thay thế nội dung thô bằng nội dung đã gắn context
              full_contents[-1]["parts"][0]["text"] = user_prompt_with_context
         else:
+             # Trường hợp lỗi: Thêm tin nhắn người dùng mới nếu không tìm thấy (nên được xử lý ở đây)
              full_contents.append({"role": "user", "parts": [{"text": user_prompt_with_context}]})
 
-        # 3. Gọi API
+        # 4. Gọi API
         response = client.models.generate_content(
             model=model_name,
             contents=full_contents,
@@ -135,7 +137,7 @@ def get_chat_response(prompt, processed_data_markdown, chat_history, api_key):
         return f"Đã xảy ra lỗi không xác định: {e}"
 
 # --- Bắt đầu luồng ứng dụng chính: Tách thành 2 Tabs ---
-tab1, tab2 = st.tabs(["⭐ PHÂN TÍCH TỰ ĐỘNG & CHỈ SỐ", "💬 TRỢ LÝ TÀI CHÍNH AI (Q&A)"])
+tab1, tab2 = st.tabs([" PHÂN TÍCH TỰ ĐỘNG & CHỈ SỐ", " TRỢ LÝ TÀI CHÍNH AI (Q&A)"])
 
 # --- Tab 1: Phân tích Tự động & Nhận xét AI ---
 with tab1:
@@ -177,65 +179,125 @@ with tab1:
                 }), use_container_width=True)
                 
                 # --- Chức năng 4: Tính Chỉ số Tài chính ---
-                st.subheader("4. Các Chỉ số Tài chính Cơ bản")
+                st.subheader("4. Các Chỉ số Khả năng Thanh toán Cơ bản")
                 
-                thanh_toan_hien_hanh_N = "N/A"
-                thanh_toan_hien_hanh_N_1 = "N/A"
-                delta_value = None
+                # Biến lưu trữ kết quả tính toán
+                thanh_toan_hien_hanh_N = None
+                thanh_toan_hien_hanh_N_1 = None
+                quick_ratio_N = None
+                quick_ratio_N_1 = None
+                
+                # Tên cột để hiển thị delta
+                delta_cr = None
+                delta_qr = None
 
                 try:
-                    # Lọc giá trị cho Tài sản ngắn hạn và Nợ ngắn hạn
+                    # Lọc giá trị cho Tài sản ngắn hạn (TSNH) và Nợ ngắn hạn (NNH)
                     tsnh_n = df_processed[df_processed['Chỉ tiêu'].str.contains('TÀI SẢN NGẮN HẠN', case=False, na=False)]['Năm sau'].iloc[0]
                     tsnh_n_1 = df_processed[df_processed['Chỉ tiêu'].str.contains('TÀI SẢN NGẮN HẠN', case=False, na=False)]['Năm trước'].iloc[0]
                     
                     no_ngan_han_N = df_processed[df_processed['Chỉ tiêu'].str.contains('NỢ NGẮN HẠN', case=False, na=False)]['Năm sau'].iloc[0] 
                     no_ngan_han_N_1 = df_processed[df_processed['Chỉ tiêu'].str.contains('NỢ NGẮN HẠN', case=False, na=False)]['Năm trước'].iloc[0]
 
-                    # Tính toán, tránh lỗi chia cho 0
+                    # --- 4a. TÍNH CURRENT RATIO ---
                     if no_ngan_han_N != 0:
                         thanh_toan_hien_hanh_N = tsnh_n / no_ngan_han_N
                     if no_ngan_han_N_1 != 0:
                         thanh_toan_hien_hanh_N_1 = tsnh_n_1 / no_ngan_han_N_1
-
-                    # Tính Delta
-                    if thanh_toan_hien_hanh_N != "N/A" and thanh_toan_hien_hanh_N_1 != "N/A":
-                        delta_value = f"{thanh_toan_hien_hanh_N - thanh_toan_hien_hanh_N_1:.2f}"
                     
-                    col1, col2 = st.columns(2)
+                    # Tính Delta Current Ratio
+                    if thanh_toan_hien_hanh_N is not None and thanh_toan_hien_hanh_N_1 is not None:
+                        delta_cr = f"{thanh_toan_hien_hanh_N - thanh_toan_hien_hanh_N_1:.2f}"
+                        
+                    # --- 4b. TÍNH QUICK RATIO (Tỷ số Thanh toán Nhanh) ---
+                    # Lọc giá trị cho Hàng tồn kho (HTK)
+                    htk_n = df_processed[df_processed['Chỉ tiêu'].str.contains('HÀNG TỒN KHO', case=False, na=False)]['Năm sau'].iloc[0]
+                    htk_n_1 = df_processed[df_processed['Chỉ tiêu'].str.contains('HÀNG TỒN KHO', case=False, na=False)]['Năm trước'].iloc[0]
+
+                    # Công thức: (TSNH - HTK) / NNH
+                    if no_ngan_han_N != 0:
+                        quick_ratio_N = (tsnh_n - htk_n) / no_ngan_han_N
+                    if no_ngan_han_N_1 != 0:
+                        quick_ratio_N_1 = (tsnh_n_1 - htk_n_1) / no_ngan_han_N_1
+
+                    # Tính Delta Quick Ratio
+                    if quick_ratio_N is not None and quick_ratio_N_1 is not None:
+                        delta_qr = f"{quick_ratio_N - quick_ratio_N_1:.2f}"
+
+                    # --- HIỂN THỊ METRICS ---
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    # Current Ratio N-1
                     with col1:
                         st.metric(
-                            label="Chỉ số Thanh toán Hiện hành (Năm trước)",
-                            value=f"{thanh_toan_hien_hanh_N_1:.2f} lần"
+                            label="Thanh toán Hiện hành (Năm trước)",
+                            value=f"{thanh_toan_hien_hanh_N_1:.2f} lần" if thanh_toan_hien_hanh_N_1 is not None else "N/A"
                         )
+                    # Current Ratio N
                     with col2:
                         st.metric(
-                            label="Chỉ số Thanh toán Hiện hành (Năm sau)",
-                            value=f"{thanh_toan_hien_hanh_N:.2f} lần",
-                            delta=delta_value
+                            label="Thanh toán Hiện hành (Năm sau)",
+                            value=f"{thanh_toan_hien_hanh_N:.2f} lần" if thanh_toan_hien_hanh_N is not None else "N/A",
+                            delta=delta_cr
+                        )
+                    # Quick Ratio N-1
+                    with col3:
+                        st.metric(
+                            label="Thanh toán Nhanh (Năm trước)",
+                            value=f"{quick_ratio_N_1:.2f} lần" if quick_ratio_N_1 is not None else "N/A"
+                        )
+                    # Quick Ratio N
+                    with col4:
+                        st.metric(
+                            label="Thanh toán Nhanh (Năm sau)",
+                            value=f"{quick_ratio_N:.2f} lần" if quick_ratio_N is not None else "N/A",
+                            delta=delta_qr
                         )
 
                 except IndexError:
-                    st.warning("Thiếu chỉ tiêu 'TÀI SẢN NGẮN HẠN' hoặc 'NỢ NGẮN HẠN' để tính chỉ số.")
+                    st.warning("Thiếu chỉ tiêu 'TÀI SẢN NGẮN HẠN', 'NỢ NGẮN HẠN' hoặc 'HÀNG TỒN KHO' để tính chỉ số.")
                 except Exception as e:
                     st.error(f"Lỗi tính toán chỉ số: {e}")
 
-                # --- Chức năng 5: Nhận xét AI ---
-                st.subheader("5. Nhận xét Tình hình Tài chính (AI)")
+                
+                # --- Chức năng MỚI: Biểu đồ Trực quan hóa ---
+                st.subheader("5. Biểu đồ Trực quan hóa Tăng trưởng")
+                
+                # Lọc các chỉ tiêu quan trọng để vẽ biểu đồ 
+                # Loại bỏ các chỉ tiêu TỔNG CỘNG và các dòng có tăng trưởng gần bằng 0 để biểu đồ dễ nhìn
+                df_chart = df_processed[
+                    (df_processed['Tốc độ tăng trưởng (%)'].abs() > 0.5) & 
+                    (~df_processed['Chỉ tiêu'].str.contains('TỔNG CỘNG', case=False, na=False))
+                ].sort_values(by='Tốc độ tăng trưởng (%)', ascending=False).head(10)
+
+                if not df_chart.empty:
+                    st.markdown("##### 📈 Top 10 Chỉ tiêu có Tốc độ Tăng trưởng thay đổi lớn nhất (%)")
+                    # Tùy chỉnh cột cho biểu đồ
+                    df_chart_styled = df_chart[['Chỉ tiêu', 'Tốc độ tăng trưởng (%)']].set_index('Chỉ tiêu')
+                    st.bar_chart(df_chart_styled, color='#307FFF')
+                else:
+                    st.info("Không đủ dữ liệu hoặc không có sự thay đổi đáng kể (>0.5%) để vẽ biểu đồ Tăng trưởng.")
+
+
+                # --- Chức năng 6: Nhận xét AI ---
+                st.subheader("6. Nhận xét Tình hình Tài chính (AI)")
                 if st.button("Yêu cầu AI Phân tích"):
                     if api_key:
-                        # Chuẩn bị dữ liệu để gửi cho AI (Đảm bảo giá trị thanh toán hiện hành được truyền đúng, kể cả N/A)
+                        # Chuẩn bị dữ liệu để gửi cho AI 
                         data_for_ai = pd.DataFrame({
                             'Chỉ tiêu': [
                                 'Toàn bộ Bảng phân tích (dữ liệu thô)', 
-                                'Tăng trưởng Tài sản ngắn hạn (%)', 
                                 'Thanh toán hiện hành (N-1)', 
-                                'Thanh toán hiện hành (N)'
+                                'Thanh toán hiện hành (N)',
+                                'Thanh toán nhanh (N-1)', 
+                                'Thanh toán nhanh (N)'
                             ],
                             'Giá trị': [
                                 st.session_state.df_markdown,
-                                f"{df_processed[df_processed['Chỉ tiêu'].str.contains('TÀI SẢN NGẮN HẠN', case=False, na=False)]['Tốc độ tăng trưởng (%)'].iloc[0]:.2f}%", 
-                                f"{thanh_toan_hien_hanh_N_1}", 
-                                f"{thanh_toan_hien_hanh_N}"
+                                f"{thanh_toan_hien_hanh_N_1}" if thanh_toan_hien_hanh_N_1 is not None else "N/A", 
+                                f"{thanh_toan_hien_hanh_N}" if thanh_toan_hien_hanh_N is not None else "N/A",
+                                f"{quick_ratio_N_1}" if quick_ratio_N_1 is not None else "N/A", 
+                                f"{quick_ratio_N}" if quick_ratio_N is not None else "N/A"
                             ]
                         }).to_markdown(index=False)
 
@@ -265,21 +327,21 @@ with tab2:
 
     # Xử lý đầu vào từ người dùng
     if prompt := st.chat_input("Hỏi về Tốc độ tăng trưởng, Tỷ trọng tài sản, hoặc bất kỳ chỉ tiêu nào trong bảng...") :
-        # Kiểm tra điều kiện cần thiết trước khi chat
+        # 1. Kiểm tra điều kiện cần thiết trước khi xử lý
         if not api_key:
-            st.warning("Không có Khóa API Gemini, không thể trò chuyện.")
-            # st.stop() # Không nên dùng st.stop() trong chat input
+            st.warning("Không có Khóa API Gemini, không thể trò chuyện. Vui lòng kiểm tra cấu hình Secrets.")
+        elif st.session_state.df_markdown == "":
+            st.warning("Vui lòng tải lên và xử lý báo cáo tài chính ở tab 'PHÂN TÍCH TỰ ĐỘNG' trước khi hỏi đáp.")
         else:
-            if st.session_state.df_markdown == "":
-                st.warning("Vui lòng tải lên và xử lý báo cáo tài chính ở tab 'PHÂN TÍCH TỰ ĐỘNG' trước khi hỏi đáp.")
-            else:
-                # 1. Thêm tin nhắn người dùng vào lịch sử
-                st.session_state.chat_history.append({"role": "user", "content": prompt})
-                with st.chat_message("user"):
-                    st.markdown(prompt)
+            # 2. Thêm tin nhắn người dùng vào lịch sử và hiển thị
+            st.session_state.chat_history.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
 
-                # 2. Lấy phản hồi từ Gemini
-                with st.chat_message("assistant"):
+            # 3. Lấy phản hồi từ Gemini và hiển thị
+            with st.chat_message("assistant"):
+                # Sử dụng khối try/except để bắt và hiển thị lỗi API/mạng nếu có
+                try:
                     with st.spinner("Đang chờ FA-Gemini trả lời..."):
                         # Gọi hàm chat với ngữ cảnh dữ liệu và lịch sử chat
                         response = get_chat_response(
@@ -288,10 +350,15 @@ with tab2:
                             st.session_state.chat_history,
                             api_key
                         )
-                        st.markdown(response)
-                        # 3. Thêm phản hồi của AI vào lịch sử
-                        st.session_state.chat_history.append({"role": "assistant", "content": response})
-
+                    st.markdown(response)
+                    # 4. Thêm phản hồi của AI vào lịch sử
+                    st.session_state.chat_history.append({"role": "assistant", "content": response})
+                except Exception as e:
+                     error_message = f"Đã xảy ra lỗi trong quá trình gọi API/xử lý: {e}. Vui lòng thử lại."
+                     st.error(error_message)
+                     # Lưu ý: Khi lỗi xảy ra, tin nhắn người dùng vẫn nằm trong lịch sử, 
+                     # nhưng tin nhắn trả lời lỗi này sẽ không được thêm vào lịch sử để tránh làm phức tạp API.
+                     
     if st.session_state.df_markdown != "":
         st.caption("Dữ liệu báo cáo đã xử lý đang được cung cấp cho AI để trả lời các câu hỏi chuyên sâu của bạn.")
     else:
